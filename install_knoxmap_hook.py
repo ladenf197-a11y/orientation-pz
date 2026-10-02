@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import stat
 import tempfile
 
 
@@ -28,6 +29,7 @@ HOOKED_BUILD_CALL = '''        with redirect_stdout(out):
 
 def _atomic_write(path, content):
     temporary = None
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o644
     try:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
                                          prefix=f".{path.name}-", delete=False) as output:
@@ -35,6 +37,7 @@ def _atomic_write(path, content):
             output.write(content)
             output.flush()
             os.fsync(output.fileno())
+        os.chmod(temporary, mode)
         os.replace(temporary, path)
     except BaseException:
         if temporary is not None:
@@ -93,6 +96,7 @@ def install_hook(knoxmap_root, orientation_pz_root):
                 staged.flush()
                 os.fsync(staged.fileno())
             try:
+                os.chmod(staged_path, stat.S_IMODE(app_path.stat().st_mode))
                 os.replace(staged_path, backup)
             except BaseException:
                 staged_path.unlink(missing_ok=True)
@@ -107,14 +111,51 @@ def install_hook(knoxmap_root, orientation_pz_root):
             "app_backup": str(backup), "already_installed": HOOK_MARKER in app_source}
 
 
+def uninstall_hook(knoxmap_root):
+    root = Path(knoxmap_root).resolve()
+    app_path = root / "app.py"
+    config_path = root / "knoxmap_config.json"
+    if not app_path.is_file():
+        raise ValueError("KnoxMap root must contain app.py")
+    app_source = app_path.read_text(encoding="utf-8")
+    hooked_block = f"{HOOK_MARKER}\n" + HOOKED_BUILD_CALL
+    if app_source.count(hooked_block) != 1:
+        raise ValueError("the installed hook is missing or has changed; no files changed")
+    restored_source = app_source.replace(hooked_block, BUILD_CALL, 1)
+
+    candidates = [root / "app.py.orientation-pz.bak",
+                  *sorted(root.glob("app.py.orientation-pz.*.bak"))]
+    matching_backup = next((path for path in candidates
+                            if path.is_file() and path.read_bytes() == restored_source.encode("utf-8")), None)
+    if matching_backup is None:
+        raise ValueError("no matching app.py backup found; no files changed")
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+    except json.JSONDecodeError as error:
+        raise ValueError(f"KnoxMap config is invalid JSON: {error}") from None
+    if not isinstance(config, dict):
+        raise ValueError("KnoxMap config must contain a JSON object")
+    config.pop("orientation_pz_root", None)
+
+    _atomic_write(app_path, restored_source)
+    if config_path.exists():
+        _atomic_write(config_path, json.dumps(config, indent=2) + "\n")
+    return {"knoxmap_root": str(root), "restored_backup": str(matching_backup),
+            "backups_preserved": True}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("knoxmap_root", type=Path, help="KnoxMap folder containing app.py")
     parser.add_argument("--orientation-pz-root", type=Path, default=Path(__file__).parent,
                         help="orientation-pz source folder (defaults to this tool's folder)")
+    parser.add_argument("--uninstall", action="store_true",
+                        help="restore the matching app.py backup and remove this config entry")
     args = parser.parse_args()
     try:
-        print(json.dumps(install_hook(args.knoxmap_root, args.orientation_pz_root), indent=2))
+        result = (uninstall_hook(args.knoxmap_root) if args.uninstall else
+                  install_hook(args.knoxmap_root, args.orientation_pz_root))
+        print(json.dumps(result, indent=2))
     except (OSError, ValueError) as error:
         parser.error(str(error))
 

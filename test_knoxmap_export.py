@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 
 from knoxmap_export import export_knoxmap_buildings
 from knoxmap_pipeline import run_knoxmap_pipeline
-from install_knoxmap_hook import HOOK_MARKER, install_hook
+from install_knoxmap_hook import HOOK_MARKER, install_hook, uninstall_hook
 
 
 def square(x, y, size=0.001):
@@ -78,6 +78,7 @@ class KnoxMapExportTests(unittest.TestCase):
             root = Path(temporary) / "KnoxMap"
             (root / "knoxbuild").mkdir(parents=True)
             (root / "knoxbuild" / "build.py").write_text("def build(): pass\n")
+            (root / "knoxmap_config.json").write_text(json.dumps({"unrelated": "keep"}))
             app = root / "app.py"
             original = """from contextlib import redirect_stdout
 def api_buildings():
@@ -95,6 +96,8 @@ def api_buildings():
             updated = install_hook(root, Path(__file__).parent)
             updated_backup_content = Path(updated["app_backup"]).read_text()
             updated_source = app.read_text()
+            removed = uninstall_hook(root)
+            restored_source = app.read_text()
             config = json.loads((root / "knoxmap_config.json").read_text())
 
         self.assertIn(HOOK_MARKER, patched)
@@ -104,7 +107,10 @@ def api_buildings():
         self.assertNotEqual(updated["app_backup"], first["app_backup"])
         self.assertEqual(updated_backup_content, newer_source)
         self.assertEqual(updated_source.count(HOOK_MARKER), 1)
-        self.assertEqual(config["orientation_pz_root"], str(Path(__file__).parent.resolve()))
+        self.assertEqual(restored_source, newer_source)
+        self.assertTrue(removed["backups_preserved"])
+        self.assertNotIn("orientation_pz_root", config)
+        self.assertEqual(config["unrelated"], "keep")
 
     def test_missing_knoxmap_root_does_not_replace_selected_area_data(self):
         with tempfile.TemporaryDirectory() as temporary:

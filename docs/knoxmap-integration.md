@@ -23,6 +23,8 @@ The installer backs up `KnoxMap/app.py` before changing only its existing
 `knoxmap_config.json`. It refuses to patch an unsupported handler and is safe to
 run again. If a KnoxMap update replaces `app.py`, rerun the installer; each
 source version gets its own backup. Restart KnoxMap after installation.
+To remove the hook, close KnoxMap and run the installer command with
+`--uninstall`; it restores the matching backup and preserves other config keys.
 
 ## Build a Selected Area
 
