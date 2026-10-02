@@ -35,6 +35,7 @@ MIT license covers its code only.
 ## Documentation
 
 - [Compiler behavior and CLI options](docs/compiler-guide.md)
+- [KnoxMap selected-area pipeline](docs/knoxmap-integration.md)
 - [PZ generation formats and verification limits](docs/pz-generation.md)
 - [OSM extraction and conversion](docs/osm-to-geojson.md)
 - [Structural test fixtures](tests/fixtures/README.md)
