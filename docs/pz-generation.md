@@ -154,12 +154,16 @@ spawn maps, Lua content, or editor runtime is bundled.
 ## Exact remaining verification limitation
 
 **Actual verification still requires running the generated project in a real
-WorldEd/PZ environment. No WorldEd project load has succeeded in this sandbox.**
-The attempted KnoxMap-pinned Linux `PZWorldEd_cli` release
-`worlded-cli-linux-20260909f` requires `GLIBC_2.35`; the sandbox has glibc 2.34.
-The dynamic loader failed before application startup, so the attempt did not
-reach project parsing. Game tiles/assets and a working PZ environment are also
-not configured here. Structural tests cannot establish editor or game behavior.
+WorldEd/PZ environment. No successful WorldEd project validation or map
+generation has completed in this sandbox.** The KnoxMap-pinned Linux
+`PZWorldEd_cli` release `worlded-cli-linux-20260909f` was downloaded and its
+published SHA-256 verified. In a disposable container with its missing Qt
+runtime libraries installed, both `--validate-bmp-generation` and
+`--generate-map` attempts against the structural export timed out without a
+conclusive result. That fixture intentionally has no terrain BMP, and this
+environment has no WorldEd conversion resources or game assets; the validator
+requires `MapBaseXML.txt`, `Rules.txt`, `Blends.txt`, and tileset metadata.
+Structural tests cannot establish editor or game behavior.
 
 The outstanding verification is:
 
