@@ -141,6 +141,8 @@ class SpatialAngularGraph:
 
 @dataclass
 class LocalGrid:
+    """A detected grid whose bearing is counter-clockwise from east."""
+
     grid_id: int
     domain_geometry: list
     bearing_degrees: float
@@ -958,136 +960,11 @@ def _union(parent, first, second):
     parent[second_root] = first_root
 
 
-def _snap_sequence(sequence, bearing_degrees, tolerance_degrees, projection, origin_x, origin_y):
-    if len(sequence) < 2 or not all(_is_position(position) for position in sequence):
-        return sequence, 0
-
-    closed = len(sequence) > 2 and sequence[0][:2] == sequence[-1][:2]
-    positions = sequence[:-1] if closed else sequence
-    if len(positions) < 2:
-        return sequence, 0
-
-    bearing = math.radians(bearing_degrees)
-    cosine = math.cos(bearing)
-    sine = math.sin(bearing)
-    local_points = []
-    for position in positions:
-        projected_x, projected_y = projection.forward(position[0], position[1])
-        x = projected_x - origin_x
-        y = projected_y - origin_y
-        local_points.append((x * cosine + y * sine, -x * sine + y * cosine))
-
-    u_parent = list(range(len(positions)))
-    v_parent = list(range(len(positions)))
-    edge_count = len(positions) if closed else len(positions) - 1
-    tangent = math.tan(math.radians(tolerance_degrees))
-    snapped_edges = 0
-    for index in range(edge_count):
-        following = (index + 1) % len(positions)
-        delta_u = local_points[following][0] - local_points[index][0]
-        delta_v = local_points[following][1] - local_points[index][1]
-        if abs(delta_v) <= abs(delta_u) * tangent:
-            _union(v_parent, index, following)
-            snapped_edges += abs(delta_v) > 1e-12
-        elif abs(delta_u) <= abs(delta_v) * tangent:
-            _union(u_parent, index, following)
-            snapped_edges += abs(delta_u) > 1e-12
-
-    if not snapped_edges:
-        return sequence, 0
-
-    component_values = ({}, {})
-    for index, (u_value, v_value) in enumerate(local_points):
-        u_root = _find(u_parent, index)
-        v_root = _find(v_parent, index)
-        component_values[0].setdefault(u_root, []).append(u_value)
-        component_values[1].setdefault(v_root, []).append(v_value)
-
-    snapped_positions = []
-    for index, position in enumerate(positions):
-        u_root = _find(u_parent, index)
-        v_root = _find(v_parent, index)
-        u_value = sum(component_values[0][u_root]) / len(component_values[0][u_root])
-        v_value = sum(component_values[1][v_root]) / len(component_values[1][v_root])
-        x = u_value * cosine - v_value * sine
-        y = u_value * sine + v_value * cosine
-        longitude, latitude = projection.inverse(x + origin_x, y + origin_y)
-        snapped_positions.append([longitude, latitude, *position[2:]])
-
-    if closed:
-        snapped_positions.append([*snapped_positions[0][:2], *sequence[-1][2:]])
-    return snapped_positions, snapped_edges
-
-
 def _geometry_positions(geometry):
     for line, _ in _geometry_lines(geometry):
         for position in line:
             if _is_position(position):
                 yield position
-
-
-def orthogonalize_geometry(geometry, bearing_degrees, tolerance_degrees=15):
-    """Snap near-grid segments in a geometry to its domain's orthogonal axes."""
-    if not geometry or bearing_degrees is None:
-        return geometry, 0
-
-    positions = list(_geometry_positions(geometry))
-    if not positions:
-        return geometry, 0
-    center_lon = sum(position[0] for position in positions) / len(positions)
-    center_lat = sum(position[1] for position in positions) / len(positions)
-    projection = ProjectionContext(center_lat)
-    origin_x, origin_y = projection.forward(center_lon, center_lat)
-    result = copy.deepcopy(geometry)
-
-    def process_sequence(sequence):
-        return _snap_sequence(
-            sequence,
-            bearing_degrees,
-            tolerance_degrees,
-            projection,
-            origin_x,
-            origin_y,
-        )
-
-    geometry_type = result.get("type")
-    coordinates = result.get("coordinates", [])
-    snapped_edges = 0
-    if geometry_type == "LineString":
-        result["coordinates"], snapped_edges = process_sequence(coordinates)
-    elif geometry_type == "MultiLineString":
-        new_lines = []
-        for line in coordinates:
-            new_line, count = process_sequence(line)
-            new_lines.append(new_line)
-            snapped_edges += count
-        result["coordinates"] = new_lines
-    elif geometry_type == "Polygon":
-        new_rings = []
-        for ring in coordinates:
-            new_ring, count = process_sequence(ring)
-            new_rings.append(new_ring)
-            snapped_edges += count
-        result["coordinates"] = new_rings
-    elif geometry_type == "MultiPolygon":
-        new_polygons = []
-        for polygon in coordinates:
-            new_rings = []
-            for ring in polygon:
-                new_ring, count = process_sequence(ring)
-                new_rings.append(new_ring)
-                snapped_edges += count
-            new_polygons.append(new_rings)
-        result["coordinates"] = new_polygons
-    elif geometry_type == "GeometryCollection":
-        new_geometries = []
-        for child in result.get("geometries", []):
-            new_child, count = orthogonalize_geometry(child, bearing_degrees, tolerance_degrees)
-            new_geometries.append(new_child)
-            snapped_edges += count
-        result["geometries"] = new_geometries
-
-    return result, snapped_edges
 
 
 def annotate_collection(

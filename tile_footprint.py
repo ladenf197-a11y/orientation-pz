@@ -3,8 +3,10 @@
 import math
 from dataclasses import dataclass
 
+import numpy as np
+from shapely import contains_xy
 from shapely.affinity import translate
-from shapely.geometry import Point, shape, mapping
+from shapely.geometry import shape, mapping
 
 
 def _rotate(x, y, angle_radians):
@@ -137,10 +139,10 @@ def rasterize_footprint(geometry, frame, max_sample_tiles=1_000_000):
     if (last_column - first_column + 1) * (last_row - first_row + 1) > max_sample_tiles:
         raise ValueError("footprint exceeds tile rasterization budget")
     occupied = []
+    column_centers = np.arange(first_column, last_column + 1, dtype=float) + 0.5
     for row in range(first_row, last_row + 1):
-        for column in range(first_column, last_column + 1):
-            if tile_geometry.contains(Point(column + 0.5, row + 0.5)):
-                occupied.append((column, row))
+        for offset in np.flatnonzero(contains_xy(tile_geometry, column_centers, row + 0.5)):
+            occupied.append((first_column + int(offset), row))
     if not occupied:
         return None
 

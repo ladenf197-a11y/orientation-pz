@@ -323,7 +323,7 @@ def validate_export(report, documents):
             require([fp["position"][0] - shift[0], fp["position"][1] - shift[1]] == [lot["x"], lot["y"]],
                     "manifest_frame", "LocalGrid and project coordinates differ")
             references.add(str(path.parent / lot["tbx_path"]))
-            if report.get("version") == 2:
+            if report.get("version") in (2, 3):
                 require(building["status"] == "generated" and building["stage"] == "complete" and not building["errors"],
                         "manifest_status", "generated record has inconsistent status")
                 require(building["local_grid_id"] == project["local_grid_id"] and
@@ -343,7 +343,7 @@ def validate_export(report, documents):
     require({p["pzw_path"] for p in projects} == {p for p in documents if p.endswith(".pzw")},
             "orphan_project", "unrecorded project document")
     require(count == report["buildings_generated"], "manifest_count", "building count differs")
-    if report.get("version") == 2:
+    if report.get("version") in (2, 3):
         records = report["buildings"]
         indexes = [r["source_feature_index"] for r in records]
         require(indexes == sorted(set(indexes)), "manifest_identity", "duplicate/unsorted feature records")
@@ -354,6 +354,12 @@ def validate_export(report, documents):
                 "manifest_count", "rejected count differs")
         require(all(r["stage"] != "complete" and r["reason"] and r["errors"] and r["tbx_path"] is None and
                     r["pz_position"] is None for r in rejected), "manifest_rejection", "incomplete rejection diagnostic")
+        if report.get("version") == 3:
+            rejection_counts = {}
+            for record in rejected:
+                rejection_counts[record["reason"]] = rejection_counts.get(record["reason"], 0) + 1
+            require(report.get("rejection_counts") == dict(sorted(rejection_counts.items())),
+                    "manifest_rejection_counts", "rejection reason counts differ")
         from pz_debug import debug_document
         try:
             debug = json.loads(documents["debug.json"])
@@ -370,7 +376,7 @@ def validate_directory(directory):
     report = json.loads((root / "manifest.json").read_text())
     require(isinstance(report, dict), "manifest_root", "manifest must be a JSON object")
     documents = {}
-    if report.get("version") == 2:
+    if report.get("version") in (2, 3):
         documents["debug.json"] = (root / "debug.json").read_text()
     # Load only manifest-owned documents; old unreferenced files may be retained
     # intentionally by the transactional writer.

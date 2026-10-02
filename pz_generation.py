@@ -91,17 +91,34 @@ class GenerationResult:
                 raise
 
 
-def _levels(properties):
-    value = properties.get("building:levels", properties.get("num_floors", 1))
-    if isinstance(value, bool):
-        raise ValueError("invalid building levels")
+def parse_building_levels(value):
+    """Return a supported storey count and an optional input warning."""
+    parts = value.split(";") if isinstance(value, str) else [value]
     try:
-        number = float(value)
+        numbers = []
+        fractional = False
+        for part in parts:
+            if isinstance(part, bool):
+                raise ValueError
+            number = float(part)
+            if not math.isfinite(number) or number <= 0:
+                raise ValueError
+            rounded = math.floor(number + 0.5)
+            if not 1 <= rounded <= 30:
+                raise ValueError
+            numbers.append(rounded)
+            fractional = fractional or not number.is_integer()
     except (TypeError, ValueError):
-        raise ValueError("invalid building levels") from None
-    if not math.isfinite(number) or not number.is_integer() or not 1 <= number <= 30:
-        raise ValueError("building levels must be an integer from 1 to 30")
-    return int(number)
+        return 1, {"code": "invalid_building_levels",
+                   "message": f"Invalid building levels value {value!r}; defaulted to 1."}
+    levels = max(numbers)
+    messages = []
+    if len(numbers) > 1:
+        messages.append(f"Multiple values found; using maximum {levels}.")
+    if fractional:
+        messages.append(f"Fractional values rounded to the nearest storey (halves up); using {levels}.")
+    warning = {"code": "building_levels_normalized", "message": " ".join(messages)} if messages else None
+    return levels, warning
 
 
 def _frontage(properties):
@@ -124,6 +141,8 @@ def _reason_code(error):
         ("stair core", "stair_core_does_not_fit"), ("disconnected", "disconnected_tile_mask"),
         ("rasterization budget", "rasterization_budget_exceeded"),
         ("dimensions", "building_dimensions_out_of_range"), ("levels", "invalid_building_levels"),
+        ("invalid footprint", "invalid_footprint"),
+        ("no tile centers", "no_tile_centers"),
         ("entrance edge", "no_exterior_entrance"), ("empty", "empty_or_invalid_footprint"),
     ):
         if fragment in message:
@@ -180,10 +199,9 @@ def generate_buildings(features, generation_ready_indices, local_grids,
                   "footprint_dimensions": {"meters": None, "tiles": None},
                   "pz_position": None, "tbx_path": None, "warnings": [], "errors": []}
         records.append(record)
-        try:
-            record["levels"] = _levels(properties)
-        except ValueError:
-            pass
+        record["levels"], level_warning = parse_building_levels(raw_levels)
+        if level_warning:
+            record["warnings"].append(level_warning)
         if index not in ready or properties.get("generation_eligible") is not True:
             reason = "not_generation_ready"
         elif geometry.get("type") not in ("Polygon", "MultiPolygon"):
@@ -197,17 +215,20 @@ def generate_buildings(features, generation_ready_indices, local_grids,
         try:
             if grid_id not in frames:
                 frames[grid_id] = GridTileFrame.from_local_grid(grids[grid_id], tile_size_meters)
-            bounds = frames[grid_id].transform_geometry(geometry).bounds
+            tile_geometry = frames[grid_id].transform_geometry(geometry)
+            bounds = tile_geometry.bounds
             if len(bounds) == 4 and all(math.isfinite(v) for v in bounds):
                 record["footprint_dimensions"]["meters"] = [round((bounds[2] - bounds[0]) * tile_size_meters, 6),
                                                                 round((bounds[3] - bounds[1]) * tile_size_meters, 6)]
             footprint = rasterize_footprint(geometry, frames[grid_id])
             if footprint is None:
-                raise ValueError("empty or invalid tile footprint")
+                if tile_geometry.is_empty or not tile_geometry.is_valid or tile_geometry.area <= 0:
+                    raise ValueError("invalid footprint geometry")
+                raise ValueError("footprint contains no tile centers; it may be too small")
             record["footprint"] = footprint.to_dict()
             record["footprint_dimensions"]["tiles"] = [footprint.width, footprint.height]
             stage = "pz_layout"
-            plan = build_plan(footprint, _levels(properties), _frontage(properties), furnish=furnish)
+            plan = build_plan(footprint, record["levels"], _frontage(properties), furnish=furnish)
             stage = "pz_tbx"
             tbx = render_tbx(plan)
             validate_tbx(tbx)
@@ -274,12 +295,17 @@ def generate_buildings(features, generation_ready_indices, local_grids,
             "warnings": ([] if terrain_bmps.get(grid_id) else [{"code": "terrain_not_supplied", "message": "Assign terrain before conversion/Generate Lots."}]),
             "buildings": reports,
         })
-    report = {"version": 2, "projects": projects, "buildings": records,
+    rejection_counts = {}
+    for record in records:
+        if record.get("status") == "rejected":
+            rejection_counts[record["reason"]] = rejection_counts.get(record["reason"], 0) + 1
+    report = {"version": 3, "projects": projects, "buildings": records,
                              "world_placement": {"base_origin_cells": list(world_origin),
                                                  "gap_cells": PROJECT_GAP_CELLS,
                                                  "policy": "local_grids_sorted_eastward"},
                              "buildings_generated": sum(len(p["buildings"]) for p in projects),
               "buildings_rejected": len(skipped),
+              "rejection_counts": dict(sorted(rejection_counts.items())),
               "skipped": sorted(skipped, key=lambda item: item["source_feature_index"])}
     files["debug.json"] = json.dumps(debug_document(records, projects), indent=2, allow_nan=False) + "\n"
     report["validation"] = validate_export(report, files)

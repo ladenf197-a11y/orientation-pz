@@ -11,9 +11,10 @@ import unittest
 import xml.etree.ElementTree as ET
 
 from orientation_detector import GridEvidence, LocalGrid, ProjectionContext, annotate_collection
-from pz_generation import generate_buildings
+from pz_generation import generate_buildings, parse_building_levels
 from pz_plan import Furniture, Opening, Room, build_plan, exterior_edges
 from pz_tbx import render_tbx
+from pz_validate import validate_export
 from pz_world import LotPlacement, render_pzw
 from tile_footprint import GridTileFrame, TileFootprint, rasterize_footprint
 
@@ -65,6 +66,40 @@ class TileMaskTests(unittest.TestCase):
                 self.assertEqual(fp.mask, ((1,) * 12,) * 8)
                 self.assertAlmostEqual(fp.position[0], 10 - frame.origin_u_meters)
                 self.assertAlmostEqual(fp.position[1], frame.origin_v_meters - 23)
+
+    def test_building_levels_parse_fractional_lists_and_invalid_values(self):
+        levels, warning = parse_building_levels("2.5")
+        self.assertEqual(levels, 3)
+        self.assertEqual(warning["code"], "building_levels_normalized")
+        levels, warning = parse_building_levels("1;2")
+        self.assertEqual(levels, 2)
+        self.assertEqual(warning["code"], "building_levels_normalized")
+        levels, warning = parse_building_levels("NaN")
+        self.assertEqual(levels, 1)
+        self.assertEqual(warning["code"], "invalid_building_levels")
+        for value in ("", "0", "31", "1;bad", True):
+            with self.subTest(value=value):
+                self.assertEqual(parse_building_levels(value)[0], 1)
+
+    def test_axis_aligned_squares_preserve_strict_tile_center_containment(self):
+        class IdentityProjection:
+            def forward(self, x, y):
+                return x, y
+
+            def inverse(self, x, y):
+                return x, y
+
+        frame = GridTileFrame(0, 0, 1, 0, 0, 10, 10, IdentityProjection())
+
+        def square(minimum, maximum):
+            ring = [[minimum, -minimum], [maximum, -minimum],
+                    [maximum, -maximum], [minimum, -maximum], [minimum, -minimum]]
+            return {"type": "Polygon", "coordinates": [ring]}
+
+        whole_meter = rasterize_footprint(square(0, 3), frame)
+        self.assertEqual(whole_meter.mask, ((1, 1, 1),) * 3)
+        boundary_centers = rasterize_footprint(square(0.5, 2.5), frame)
+        self.assertEqual((boundary_centers.position, boundary_centers.mask), ((1, 1), ((1,),)))
 
     def test_hole_and_concavity_are_not_filled(self):
         frame = GridTileFrame.from_local_grid(grid())
@@ -205,6 +240,40 @@ class WorldPlacementTests(unittest.TestCase):
 
 
 class CompilerIntegrationTests(unittest.TestCase):
+    def test_level_normalization_warnings_are_written_to_manifest(self):
+        generated = generate_buildings(
+            [feature(0, **{"building:levels": "2.5"}),
+             feature(25, **{"building:levels": "abc"})],
+            [0, 1], [grid()])
+        self.assertEqual(generated.report["version"], 3)
+        self.assertEqual(generated.report["buildings"][0]["warnings"][0]["code"],
+                         "building_levels_normalized")
+        self.assertIn("3", generated.report["buildings"][0]["warnings"][0]["message"])
+        self.assertEqual(generated.report["buildings"][1]["warnings"][0]["code"],
+                         "invalid_building_levels")
+        self.assertEqual(generated.report["buildings"][1]["levels"], 1)
+        with tempfile.TemporaryDirectory() as directory:
+            generated.write(directory)
+            manifest = json.loads((Path(directory) / "manifest.json").read_text())
+        self.assertEqual(manifest["buildings"][0]["warnings"][0]["code"],
+                         "building_levels_normalized")
+        self.assertEqual(manifest["buildings"][1]["warnings"][0]["code"],
+                         "invalid_building_levels")
+        legacy_report = dict(generated.report, version=2)
+        legacy_report.pop("rejection_counts")
+        validate_export(legacy_report, generated.files)
+
+    def test_tiny_footprints_have_specific_reason_and_manifest_count(self):
+        tiny = feature()
+        tiny["geometry"] = geometry([rectangle(0, 0, .1, .1)])
+        generated = generate_buildings([tiny, feature(25, generation_eligible=False)], [0, 1], [grid()])
+        self.assertEqual(generated.report["buildings_rejected"], 2)
+        self.assertEqual(generated.report["rejection_counts"], {
+            "no_tile_centers": 1,
+            "not_generation_ready": 1,
+        })
+        self.assertIn("no tile centers", generated.report["skipped"][0]["reason"])
+
     def test_gates_levels_frontage_and_no_input_mutation(self):
         features = [feature(0, **{"building:levels": "2",
                     "road_relationship": {"approach_direction": {"local_grid_side": "grid_axis_positive"}}}),
@@ -213,8 +282,11 @@ class CompilerIntegrationTests(unittest.TestCase):
         before = copy.deepcopy(features)
         generated = generate_buildings(features, [0, 1, 2, 3], [grid()])
         self.assertEqual(features, before)
-        self.assertEqual(generated.report["buildings_generated"], 1)
-        self.assertEqual([s["source_feature_index"] for s in generated.report["skipped"]], [1, 2, 3, 4])
+        self.assertEqual(generated.report["buildings_generated"], 2)
+        self.assertEqual([s["source_feature_index"] for s in generated.report["skipped"]], [1, 2, 4])
+        fallback = generated.report["buildings"][3]
+        self.assertEqual(fallback["levels"], 1)
+        self.assertEqual(fallback["warnings"][0]["code"], "invalid_building_levels")
         root = ET.fromstring(generated.files["grid_0/buildings/building_0.tbx"])
         self.assertEqual(len(root.findall("floor")), 3)
         door = root.find("floor/object[@type='door']")

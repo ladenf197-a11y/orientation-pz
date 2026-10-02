@@ -206,19 +206,21 @@ and resource state across fresh processes.
 
 ## Manifest and debug trace
 
-Manifest **version 2** retains `projects`, `buildings_generated`, and the compact
+Manifest **version 3** retains `projects`, `buildings_generated`, and the compact
 legacy `skipped` list. It adds a flat `buildings` list, ordered by source feature
 index, covering every building-tagged candidate, including rejected ones.
 Project `buildings` lists contain the same generated records. Non-building
-features are not candidates.
+features are not candidates. The validator remains compatible with version 2.
 
 Each record includes:
 
 - `source_feature_id`, its `source_id_origin`, and `source_feature_index`.
   ID precedence is GeoJSON `feature.id`, then properties `id`, `@id`, `osm_id`;
   otherwise the zero-based source index is used and explicitly labeled.
-- `local_grid_id` and `local_grid_angle`; `levels` (parsed, or null when invalid)
-  and `requested_levels` (text preserving the supplied level value).
+- `local_grid_id` and `local_grid_angle`; `levels` (the parsed or fallback count)
+  and `requested_levels` (text preserving the supplied level value). Fractional
+  values and semicolon-separated lists that are normalized, as well as invalid
+  values that default to one, are described in each record's `warnings` list.
 - `footprint_dimensions.meters`: continuous geometry bounds measured along the
   LocalGrid axes and reported to six decimal places, before tile sampling;
   `.tiles`: cropped integer mask dimensions. Dimensions are null when that
@@ -231,6 +233,7 @@ Each record includes:
   Stages are `pz_eligibility`, `pz_raster`, `pz_layout`, `pz_tbx`, `pz_placement`,
   and `complete`. Project warnings identify missing terrain. Building warnings
   identify a window or requested furniture that cannot be safely placed.
+The top-level `rejection_counts` maps each rejection reason code to its count.
 
 For example, a four-storey 2.1m × 3.4m footprint produces:
 
